@@ -1,12 +1,8 @@
 # pgs
 Probabilistic Global Search for Seismic or Acoustic Location
 
-## Dependencies:
-Anaconda Python +
-- obspy
-- pyproj
-- toml
-- cartopy
+## Installing dependencies with conda
+conda env create -f environment.yml
 
-## Getting started:
+## Getting started
 Open tutorial.ipynb in a Jupyter environment
