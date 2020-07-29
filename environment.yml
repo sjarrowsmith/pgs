@@ -1,0 +1,17 @@
+name: pgs
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - utm
+  - obspy
+  - numpy
+  - pyproj
+  - cartopy
+  - matplotlib
+  - ipython
+  - notebook
+  - toml
+  - pandas
+  
+  
