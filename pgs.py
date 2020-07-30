@@ -1,7 +1,7 @@
 from obspy.taup import TauPyModel
 import numpy as np
 from pyproj import Geod
-import datetime, warnings, pickle, utm, time, cartopy, toml, pdb
+import datetime, warnings, pickle, utm, time, cartopy, toml, dask, pdb
 from obspy import UTCDateTime
 from obspy.signal.trigger import recursive_sta_lta
 from obspy.taup import taup_create
@@ -14,6 +14,7 @@ from scipy.integrate import trapz
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from multiprocessing import Pool
+from dask.distributed import Client, progress
 warnings.filterwarnings("ignore")
 
 def make_model_file(config, del_dist=5, p_phase=['P','p'], s_phase=['S','s']):
@@ -98,12 +99,11 @@ def get_max_distance_gridnode(stlo, stla, bounds):
     
     return grid_dist_max
 
-def _compute_tt_for_dist(arg):
+
+def _compute_tt_for_dist(arg, z, model, grid_dists, p_phase_list, s_phase_list):
     '''
     (PRIVATE) Computes predicted P and S traveltimes for a given distance defined by
     grid_dists[arg] and a range of depths defined by z
-    
-    Note: grid_dists and z are global variables
     '''
     
     grid_times_p = np.zeros(len(z))
@@ -120,37 +120,40 @@ def _compute_tt_for_dist(arg):
     
     return grid_times_p, grid_times_s
 
-def make_ttcurves(model_in, grid_dists_in, z_in, nthreads=48,
-                  p_phases=["P","p"], s_phases=["S","s"]):
+def make_ttcurves(model, grid_dists, z, p_phases=["P","p"], s_phases=["S","s"],
+                  threads_per_worker=1, n_workers=12):
     '''
     Computes predicted travel time curves for a range of distances and depths
 
     Inputs:
-    model_in is a TauPyModel
-    grid_dists_in is a vector of distances (km)
-    z_in is a vector of depths (km)
-    nthreads is the number of threads to parallelize over (parallelizes over distance)
+    model is a TauPyModel
+    grid_dists is a vector of distances (km)
+    z is a vector of depths (km)
 
     Outputs
     p-wave travel times for each distance and depth [N_distances, N_depths]
     s-wave travel times for each distance and depth [N_distances, N_depths]
     '''
 
-    global model, grid_dists, z, p_phase_list, s_phase_list
-    model = model_in; grid_dists = grid_dists_in; z = z_in
+    client = Client(threads_per_worker=threads_per_worker, n_workers=n_workers)
+
     p_phase_list = p_phases; s_phase_list = s_phases
 
-    pool = Pool(processes=nthreads)
-    Nargs = range(len(grid_dists))
-    #_compute_tt_for_dist(0)
-    res = pool.map(_compute_tt_for_dist, Nargs)
+    # Building delayed loop:
+    lazy_results = []
+    for i in range(0, len(grid_dists)):
+        lazy_result = dask.delayed(_compute_tt_for_dist)(i, z, model, grid_dists, p_phase_list, s_phase_list)
+        lazy_results.append(lazy_result)
+    
+    # Running loop with dask:
+    res = dask.compute(*lazy_results)
     res = np.array(res)
     grid_times_p = res[:,0,:]
     grid_times_s = res[:,1,:]
-    
+
     return grid_times_p, grid_times_s
 
-def _predict_times_for_station(arg):
+def _predict_times_for_station(arg, N_lat, N_lon, N_d, x, y, stlo, stla, grid_dists, del_dist, grid_times_p, grid_times_s):
     '''
     (PRIVATE) Computes predicted arrival time at a single station (arg provides the index) for each grid node by
     interpolating between arrival times computed as a function of distance
@@ -189,24 +192,27 @@ def _predict_times_for_station(arg):
     
     return t_p, t_s
 
-def compute_traveltimes_grid(N_lat_in, N_lon_in, N_d_in, x_in, y_in, stlo_in, stla_in, 
-                             grid_dists_in, del_dist_in, grid_times_p_in, grid_times_s_in, nthreads=48):
+def compute_traveltimes_grid(N_lat, N_lon, N_d, x, y, stlo, stla, grid_dists, del_dist, grid_times_p, grid_times_s,
+                             threads_per_worker=1, n_workers=12):
     '''
     Computes traveltimes for each grid node and station location by interpolating 1D travel time curves
     '''
-
-    global N_lat, N_lon, N_d, x, y, stlo, stla, grid_dists, del_dist, grid_times_p, grid_times_s
-    N_lat = N_lat_in; N_lon = N_lon_in; N_d = N_d_in; x = x_in; y = y_in; stlo = stlo_in; stla = stla_in
-    grid_dists = grid_dists_in; del_dist = del_dist_in; grid_times_p = grid_times_p_in; grid_times_s = grid_times_s_in
+    
+    client = Client(threads_per_worker=threads_per_worker, n_workers=n_workers)
 
     N_s = len(stla)
 
-    pool = Pool(processes=nthreads)   # This is going to spawn a new thread for each station
-    Nargs = range(N_s)
-    res = pool.map(_predict_times_for_station, Nargs)
-    t = np.array(res)
-    t_p = t[:,0,:,:,:]
-    t_s = t[:,1,:,:,:]
+    lazy_results = []
+    for i in range(0, N_s):
+        lazy_result = dask.delayed(_predict_times_for_station)(i, N_lat, N_lon, 
+                                   N_d, x, y, stlo, stla, grid_dists, del_dist, grid_times_p, grid_times_s)
+        lazy_results.append(lazy_result)
+    
+    # Running loop with dask:
+    res = dask.compute(*lazy_results)
+    res = np.array(res)
+    t_p = res[:,0,:,:,:]
+    t_s = res[:,1,:,:,:]
 
     return t_p, t_s
 
@@ -298,7 +304,7 @@ def gaussian(residual, std):
     
     return gauss
 
-def _get_likelihood_for_event_hypothesis(i, j, k, t0, t_p, t_s, t_a_p, t_a_s, b, b_a):
+def _get_likelihood_for_event_hypothesis(i, j, k, t0, t_p, t_s, t_a_p, t_a_s, b, b_a, use_p, use_s, use_b, t_std, b_std):
     '''
     Returns the likelihood for an event hypothesis defined by (i, j, k, t0)
     
@@ -362,7 +368,7 @@ def _get_likelihood_for_event_hypothesis(i, j, k, t0, t_p, t_s, t_a_p, t_a_s, b,
     
     return likl
 
-def _get_likelihood_for_origintime(arg):
+def _get_likelihood_for_origintime(arg, N_lat, N_lon, N_d, t0s, t_p, t_s, t_a_p, t_a_s, t_std, use_p, use_s, b, b_a, use_b, b_std):
     '''
     Calls get_likelihood_for_event_hypothesis multiple times for each
     event hypothesis for a specific origin time
@@ -375,11 +381,12 @@ def _get_likelihood_for_origintime(arg):
     for i in range(0, N_lat):
         for j in range(0, N_lon):
             for k in range(0, N_d):
-                likl[i,j,k] = _get_likelihood_for_event_hypothesis(i, j, k, t0, t_p, t_s, t_a_p, t_a_s, b, b_a)
+                likl[i,j,k] = _get_likelihood_for_event_hypothesis(i, j, k, t0, t_p, t_s, t_a_p, t_a_s, b, b_a, use_p, use_s, use_b, t_std, b_std)
     
     return likl
 
-def do_location(config, t_std_in=0.2, b_std_in=5, use_p_in = True, use_s_in=True, use_b_in=False):
+def do_location(config, t_std=0.2, b_std=5, use_p = True, use_s=True, use_b=False,
+                threads_per_worker=1, n_workers=12):
     '''
     Performs location over a range of origin times t0s_in using travel time predictions (and spatial
     grid nodes) defined in prediction_file, using station indices defined by stid_event and observed
@@ -392,9 +399,7 @@ def do_location(config, t_std_in=0.2, b_std_in=5, use_p_in = True, use_s_in=True
     likl is a 4D matrix of likelihoods with dimensions [N_origin times, N_lat, N_lon, N_d]
     '''
 
-    global N_lat, N_lon, N_d, t0s, t_p, t_s, t_a_p, t_a_s, t_std, use_p, use_s, b, b_a, use_b, b_std
-    t_std = t_std_in; use_p = use_p_in; use_s = use_s_in
-    use_b = use_b_in; b_std = b_std_in
+    client = Client(threads_per_worker=threads_per_worker, n_workers=n_workers)
 
     # Reading data from prediction_file:
     data = pickle.load(open(config['model_file'], 'rb'))
@@ -427,13 +432,15 @@ def do_location(config, t_std_in=0.2, b_std_in=5, use_p_in = True, use_s_in=True
             b_a.append(None)
         else:
             b_a.append(float(b_i))
-
-    _get_likelihood_for_origintime(0)
-
-    pool = Pool(processes=len(t0s))   # This is going to spawn a new thread for each origin time hypothesis
-    Nargs = range(len(t0s))
-    _get_likelihood_for_origintime(0)
-    res = pool.map(_get_likelihood_for_origintime, Nargs)
+    
+    lazy_results = []
+    for i in range(0, len(t0s)):
+        lazy_result = dask.delayed(_get_likelihood_for_origintime)(i, N_lat, N_lon, N_d, 
+                                   t0s, t_p, t_s, t_a_p, t_a_s, t_std, use_p, use_s, b, b_a, use_b, b_std)
+        lazy_results.append(lazy_result)
+    
+    # Running loop with dask:
+    res = dask.compute(*lazy_results)
     likl = np.array(res)
 
     return likl
