@@ -17,7 +17,8 @@ from multiprocessing import Pool
 from dask.distributed import Client, progress
 warnings.filterwarnings("ignore")
 
-def make_model_file(config, del_dist=5, p_phase=['P','p'], s_phase=['S','s']):
+def make_model_file(config, del_dist=5, p_phase=['P','p'], s_phase=['S','s'],
+                    threads_per_worker=1, n_workers=12):
     '''
     Makes a model file for a given configuration, containing predicted travel times
     and backazimuths for each spatial grid point
@@ -43,14 +44,18 @@ def make_model_file(config, del_dist=5, p_phase=['P','p'], s_phase=['S','s']):
         pdb.set_trace()
     grid_times_p, grid_times_s = make_ttcurves(model, grid_dists, z,
                                                p_phases=p_phase,
-                                               s_phases=s_phase)
+                                               s_phases=s_phase,
+                                               threads_per_worker=threads_per_worker,
+                                               n_workers=n_workers)
 
     # Computing traveltimes and backazimuths for each source grid point:
     t_p, t_s = compute_traveltimes_grid(config['grid']['N_lat'], config['grid']['N_lon'],
                                         config['grid']['N_d'], x, y,
                                         config['stations']['stlo'],
                                         config['stations']['stla'],
-                                        grid_dists, del_dist, grid_times_p, grid_times_s)
+                                        grid_dists, del_dist, grid_times_p, grid_times_s,
+                                        threads_per_worker=threads_per_worker,
+                                        n_workers=n_workers)
     b = compute_backazimuths_grid(config['grid']['N_lat'], config['grid']['N_lon'], x, y,
                                   config['stations']['stlo'], config['stations']['stla'])
     
