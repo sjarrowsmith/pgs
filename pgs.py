@@ -13,6 +13,7 @@ from scipy.integrate import simps
 from scipy.integrate import trapz
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+from cartopy.io import shapereader
 from multiprocessing import Pool
 from dask.distributed import Client, progress
 warnings.filterwarnings("ignore")
@@ -511,7 +512,8 @@ def plot_marginal_distributions(config, likl, aspect1=None, aspect2=None,
                              cmap='hot_r', scale_bar_length=5, scale_bar_position=(0.85,0.05),
                              override_extent=None, plot_maxlikl=False, plot_baz=True,
                              plot_true=False, evla=None, evlo=None, evdp=None, 
-                             plot_credibility=True, cred=0.95, do_smoothing=False, smoothing_width=1):
+                             plot_credibility=True, cred=0.95, do_smoothing=False, smoothing_width=1,
+                             shp_file=None):
     '''
     Plots the full 3D marginal distribution over location and depth
     '''
@@ -590,6 +592,13 @@ def plot_marginal_distributions(config, likl, aspect1=None, aspect2=None,
     for i in range(0, len(stla)):
         ax2.plot(stlo[i], stla[i], marker='^', color='w', mec='k', mew=1,
                 transform=ccrs.Geodetic())
+    if shp_file is not None:
+        shp = shapereader.Reader(shp_file)
+        for record, geometry in zip(shp.records(), shp.geometries()):
+            ax2.add_geometries([geometry], ccrs.PlateCarree(), facecolor='lightgray', alpha=0.3,
+                            edgecolor='black')
+    else:
+        ax2.coastlines(resolution='10m')
     ax2.pcolormesh(x-np.diff(lons)[0]/2, y-np.diff(lats)[0]/2, likl[:,:], transform=ccrs.PlateCarree(),
                 cmap=plt.get_cmap(cmap))
     if plot_credibility:
@@ -621,7 +630,7 @@ def plot_marginal_distributions(config, likl, aspect1=None, aspect2=None,
     if override_extent is not None:
         ax2.set_extent([override_extent[0], override_extent[1], override_extent[2], override_extent[3]])
     scale_bar(ax2, scale_bar_length, location=scale_bar_position)
-    ax2.coastlines(resolution='10m')
+
     borders = cfeature.NaturalEarthFeature(category='cultural', name='admin_0_boundary_lines_land', scale='10m',
                                       facecolor='none', edgecolor='grey', linewidth=1)
     ax2.add_feature(borders)
@@ -664,6 +673,11 @@ def plot_marginal_distributions(config, likl, aspect1=None, aspect2=None,
     #pdb.set_trace()
     #plt.pcolormesh(lats, z, likl[:,:], cmap=plt.get_cmap(cmap))
     plt.contour(lons, -z, likl.transpose(), [contour_threshold(likl, lats, z, cred=cred)], colors=['k'])
+
+    if plot_true:
+        ax4.plot([evlo, evlo], [np.min(-z), np.max(-z)], 'b--', lw=1)
+        ax4.plot([np.min(lons), np.max(lons)], [-evdp, -evdp], 'b--', lw=1)
+    
     #plt.show()
     # ---------
 
@@ -699,6 +713,11 @@ def plot_marginal_distributions(config, likl, aspect1=None, aspect2=None,
     #plt.pcolormesh(lats, -z, likl.transpose(), cmap=plt.get_cmap(cmap))
     plt.pcolormesh(z, lats, likl, cmap=plt.get_cmap(cmap))
     plt.contour(z, lats, likl, [contour_threshold(likl, lons, z, cred=cred)], colors=['k'])
+
+    if plot_true:
+        ax3.plot([np.min(z), np.max(z)], [evla, evla], 'b--', lw=1)
+        ax3.plot([evdp, evdp], [np.min(lats), np.max(lats)], 'b--', lw=1)
+    
     #plt.show()
     # ---------
     plt.setp(ax3.get_yticklabels(), visible=False)
