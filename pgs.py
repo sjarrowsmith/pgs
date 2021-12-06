@@ -157,6 +157,8 @@ def make_ttcurves(model, grid_dists, z, p_phases=["P","p"], s_phases=["S","s"],
     grid_times_p = res[:,0,:]
     grid_times_s = res[:,1,:]
 
+    client.close()
+
     return grid_times_p, grid_times_s
 
 def _predict_times_for_station(arg, N_lat, N_lon, N_d, x, y, stlo, stla, grid_dists, del_dist, grid_times_p, grid_times_s):
@@ -219,6 +221,8 @@ def compute_traveltimes_grid(N_lat, N_lon, N_d, x, y, stlo, stla, grid_dists, de
     res = np.array(res)
     t_p = res[:,0,:,:,:]
     t_s = res[:,1,:,:,:]
+
+    client.close()
 
     return t_p, t_s
 
@@ -420,21 +424,21 @@ def do_location(config, t_std=0.2, b_std=5, use_p = True, use_s=True, use_b=Fals
 
     t_a_p = []
     for t_p_i in config['data']['t_p']:
-        if t_p_i == '':
+        if t_p_i == '' or t_p_i == 'None':
             t_a_p.append(None)
         else:
             t_a_p.append(date2num(UTCDateTime(t_p_i).datetime))
 
     t_a_s = []
     for t_s_i in config['data']['t_s']:
-        if t_s_i == '':
+        if t_s_i == '' or t_s_i == 'None':
             t_a_s.append(None)
         else:
             t_a_s.append(date2num(UTCDateTime(t_s_i).datetime))
 
     b_a = []
     for b_i in config['data']['b']:
-        if b_i == '':
+        if b_i == '' or b_i == 'None':
             b_a.append(None)
         else:
             b_a.append(float(b_i))
@@ -449,6 +453,7 @@ def do_location(config, t_std=0.2, b_std=5, use_p = True, use_s=True, use_b=Fals
     res = dask.compute(*lazy_results)
     likl = np.array(res)
 
+    client.close()
     return likl
 
 def fix_event_to_gridnode(evla, evlo, evdp, evt0, t0s, prediction_file):
@@ -820,7 +825,7 @@ def plot_marginal_distribution2D(config, likl, aspect1=None, aspect2=None,
 
     baz = []
     for b_i in config['data']['b']:
-        if b_i == '':
+        if b_i == '' or b_i == 'None':
             baz.append(None)
         else:
             baz.append(float(b_i))
@@ -917,7 +922,7 @@ def plot_marginal_distribution2D(config, likl, aspect1=None, aspect2=None,
     gl.xlabels_top = False
     gl.ylabels_right = False
 
-    return likl
+    return likl, fig
 
 def plot_likelihood_function(config, likl, plot_true=False,
                              plot_maxlikl=True, evla=None, evlo=None, evdp=None, evt0=None, 
