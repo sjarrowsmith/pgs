@@ -9,8 +9,8 @@ from scipy.ndimage import gaussian_filter
 import matplotlib.pyplot as plt
 from matplotlib.dates import date2num, num2date
 from matplotlib import gridspec
-from scipy.integrate import simps
-from scipy.integrate import trapz
+from scipy.integrate import simpson as simps    # Changed from simps to simpson
+from scipy.integrate import trapezoid as trapz  # Changed from trapz to trapezoid
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from cartopy.io import shapereader
@@ -141,18 +141,20 @@ def make_ttcurves(model, grid_dists, z, p_phases=["P","p"], s_phases=["S","s"],
     s-wave travel times for each distance and depth [N_distances, N_depths]
     '''
 
-    client = Client(threads_per_worker=threads_per_worker, n_workers=n_workers)
-
     p_phase_list = p_phases; s_phase_list = s_phases
 
-    # Building delayed loop:
-    lazy_results = []
-    for i in range(0, len(grid_dists)):
-        lazy_result = dask.delayed(_compute_tt_for_dist)(i, z, model, grid_dists, p_phase_list, s_phase_list)
-        lazy_results.append(lazy_result)
-    
-    # Running loop with dask:
-    res = dask.compute(*lazy_results)
+    # Create and manage client with context manager
+    with Client(threads_per_worker=threads_per_worker, n_workers=n_workers) as client:
+        # Building delayed loop
+        lazy_results = []
+        for i in range(0, len(grid_dists)):
+            lazy_result = dask.delayed(_compute_tt_for_dist)(i, z, model, grid_dists, p_phase_list, s_phase_list)
+            lazy_results.append(lazy_result)
+        
+        # Running loop with dask
+        res = dask.compute(*lazy_results)
+
+    # Process results outside the context manager
     res = np.array(res)
     grid_times_p = res[:,0,:]
     grid_times_s = res[:,1,:]
@@ -204,18 +206,20 @@ def compute_traveltimes_grid(N_lat, N_lon, N_d, x, y, stlo, stla, grid_dists, de
     Computes traveltimes for each grid node and station location by interpolating 1D travel time curves
     '''
     
-    client = Client(threads_per_worker=threads_per_worker, n_workers=n_workers)
-
     N_s = len(stla)
 
-    lazy_results = []
-    for i in range(0, N_s):
-        lazy_result = dask.delayed(_predict_times_for_station)(i, N_lat, N_lon, 
+    # Create and manage client with context manager
+    with Client(threads_per_worker=threads_per_worker, n_workers=n_workers) as client:
+        lazy_results = []
+        for i in range(0, N_s):
+            lazy_result = dask.delayed(_predict_times_for_station)(i, N_lat, N_lon, 
                                    N_d, x, y, stlo, stla, grid_dists, del_dist, grid_times_p, grid_times_s)
-        lazy_results.append(lazy_result)
-    
-    # Running loop with dask:
-    res = dask.compute(*lazy_results)
+            lazy_results.append(lazy_result)
+        
+        # Running loop with dask
+        res = dask.compute(*lazy_results)
+
+    # Process results outside the context manager
     res = np.array(res)
     t_p = res[:,0,:,:,:]
     t_s = res[:,1,:,:,:]
@@ -405,8 +409,6 @@ def do_location(config, t_std=0.2, b_std=5, use_p = True, use_s=True, use_b=Fals
     likl is a 4D matrix of likelihoods with dimensions [N_origin times, N_lat, N_lon, N_d]
     '''
 
-    client = Client(threads_per_worker=threads_per_worker, n_workers=n_workers)
-
     # Reading data from prediction_file:
     data = pickle.load(open(config['model_file'], 'rb'))
     t_p = data[0]; t_s = data[1]; b = data[2]
@@ -439,15 +441,18 @@ def do_location(config, t_std=0.2, b_std=5, use_p = True, use_s=True, use_b=Fals
         else:
             b_a.append(float(b_i))
     
-    lazy_results = []
-    for i in range(0, len(t0s)):
-        lazy_result = dask.delayed(_get_likelihood_for_origintime)(i, N_lat, N_lon, N_d, 
-                                   t0s, t_p, t_s, t_a_p, t_a_s, t_std, use_p, use_s, b, b_a, use_b, b_std)
-        lazy_results.append(lazy_result)
-    
-    # Running loop with dask:
-    res = dask.compute(*lazy_results)
-    likl = np.array(res)
+    # Create and manage client with context manager
+    with Client(threads_per_worker=threads_per_worker, n_workers=n_workers) as client:
+        lazy_results = []
+        for i in range(0, len(t0s)):
+            lazy_result = dask.delayed(_get_likelihood_for_origintime)(
+                i, N_lat, N_lon, N_d, t0s, t_p, t_s, t_a_p, t_a_s, 
+                t_std, use_p, use_s, b, b_a, use_b, b_std)
+            lazy_results.append(lazy_result)
+        
+        # Running loop with dask
+        res = dask.compute(*lazy_results)
+        likl = np.array(res)
 
     return likl
 
@@ -797,7 +802,7 @@ def plot_marginal_distribution2D(config, likl, aspect1=None, aspect2=None,
                              override_extent=None, plot_maxlikl=False, plot_baz=True,
                              plot_true=False, evla=None, evlo=None, evdp=None, 
                              plot_credibility=True, cred=0.95, do_smoothing=False, smoothing_width=1,
-                             plot_is_stations=True, plot_s_stations=True):
+                             plot_is_stations=True, plot_s_stations=True, shp_file=None):
     '''
     Plots the 2D marginal posterior distribution over location by integrating over
     origin time and depth
@@ -856,6 +861,14 @@ def plot_marginal_distribution2D(config, likl, aspect1=None, aspect2=None,
 
     ax2 = plt.axes(projection=ccrs.PlateCarree())
     
+    if shp_file is not None:
+        shp = shapereader.Reader(shp_file)
+        for record, geometry in zip(shp.records(), shp.geometries()):
+            ax2.add_geometries([geometry], ccrs.PlateCarree(), facecolor='lightgray', alpha=0.3,
+                            edgecolor='black')
+    else:
+        ax2.coastlines(resolution='10m')
+    
     for i in range(0, len(stla)):
         if baz[i] == None:
             if plot_s_stations:
@@ -909,7 +922,7 @@ def plot_marginal_distribution2D(config, likl, aspect1=None, aspect2=None,
     if override_extent is not None:
         ax2.set_extent([override_extent[0], override_extent[1], override_extent[2], override_extent[3]])
     scale_bar(ax2, scale_bar_length, location=scale_bar_position)
-    ax2.coastlines(resolution='10m')
+    #ax2.coastlines(resolution='10m')
     borders = cfeature.NaturalEarthFeature(category='cultural', name='admin_0_boundary_lines_land', scale='10m',
                                       facecolor='none', edgecolor='grey', linewidth=1)
     ax2.add_feature(borders)
