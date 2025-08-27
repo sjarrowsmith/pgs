@@ -5,6 +5,7 @@ import datetime, warnings, pickle, utm, time, cartopy, toml, dask, pdb
 from obspy import UTCDateTime
 from obspy.signal.trigger import recursive_sta_lta
 from obspy.taup import taup_create
+from obspy.geodetics import locations2degrees, degrees2kilometers
 from scipy.ndimage import gaussian_filter
 import matplotlib.pyplot as plt
 from matplotlib.dates import date2num, num2date
@@ -477,25 +478,77 @@ def fix_event_to_gridnode(evla, evlo, evdp, evt0, t0s, prediction_file):
 
     return evla, evlo, evdp, evt0
 
-def print_maximum_likelihood_solution(likl, t0s, prediction_file):
+def print_maximum_likelihood_solution(config, likl, is_celerity=0.3):
     '''
     Prints the maximum likelihood solution
+
+    If only infrasound backazimuths are used, but infrasound arrival times
+    are provided in config then the origin time is estimated using the maximum
+    likelihood location, infrasound arrival times, and a fixed infrasound
+    celerity of is_celerity.
     '''
 
-    # Reading data from prediction_file:
-    data = pickle.load(open(prediction_file, 'rb'))
-    t_p = data[0]; t_s = data[1]; b = data[2]; bounds = data[3]; N_lon = data[4]; N_lat = data[5]; N_d = data[6]
+    data = pickle.load(open(config['model_file'], 'rb'))
+    t_p = data[0]; t_s = data[1]; b = data[2]
+
+    bounds = config['grid']['bounds']; N_lon = config['grid']['N_lon']
+    N_lat = config['grid']['N_lat']; N_d = config['grid']['N_d']
     lons = np.linspace(bounds[0], bounds[1], N_lon)
     lats = np.linspace(bounds[2], bounds[3], N_lat)
     z = np.linspace(bounds[4], bounds[5], N_d)
 
+    t_start = date2num(UTCDateTime(config['time-grid']['t_start']).datetime)
+    t_end = date2num(UTCDateTime(config['time-grid']['t_end']).datetime)
+    t0s = np.linspace(t_start,t_end,config['time-grid']['N_t'])
+
     k_, i_, j_, l_ = np.unravel_index(likl.argmax(), likl.shape)
 
+    # Checking to see if origin time and depth are resolved in the likelihood function:
+    is_likl_same_all_times = np.std(likl[:, i_, j_, l_]) == 0
+    is_likl_same_all_depths = np.std(likl[k_, i_, j_, :]) == 0
+
     print('Optimal event hypothesis:')
-    print('Time =', num2date(t0s[k_]))
-    print('longitude =', lats[i_])
-    print('latitude =', lons[j_])
-    print('Depth =', z[l_])
+    print('latitude =', lats[i_])
+    print('longitude =', lons[j_])
+    if is_likl_same_all_depths:
+        print('Depth not resolved')
+    else:
+        print('Depth =', z[l_])
+    if is_likl_same_all_times:
+        # Extracting location information:
+        stlas = config['stations']['stla']
+        stlos = config['stations']['stlo']
+        otimes = []
+
+        # Check if t_i exists in config and has correct length
+        if ('data' in config and 
+            't_i' in config['data'] and 
+            len(config['data']['t_i']) == len(stlas)):
+            
+            itimes = config['data']['t_i']
+            for index in range(len(stlas)):
+                stla = stlas[index]
+                stlo = stlos[index]
+                itime = UTCDateTime(itimes[index])
+                
+                # Get distance in degrees and km
+                dist_deg = locations2degrees(lats[i_], lons[j_], stla, stlo)
+                dist_km = degrees2kilometers(dist_deg)
+
+                # Calculate travel time and origin time
+                travel_time_s = dist_km / is_celerity
+                origin_time = itime - travel_time_s
+                otimes.append(origin_time)
+            
+            # Calculate mean origin time only if we have data
+            timestamps = [ot.timestamp for ot in otimes]
+            mean_timestamp = np.mean(timestamps)
+            mean_origin_time = UTCDateTime(mean_timestamp)
+            print(f"Time (est. from infrasound) = {mean_origin_time}")
+        else:
+            print('Time not resolved')
+    else:
+        print('Time =', num2date(t0s[k_]))
 
 def contour_threshold(marg_p, lons, lats, cred=0.95, n_trials=1000):
     '''
