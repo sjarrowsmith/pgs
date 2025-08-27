@@ -10,8 +10,14 @@ from scipy.ndimage import gaussian_filter
 import matplotlib.pyplot as plt
 from matplotlib.dates import date2num, num2date
 from matplotlib import gridspec
-from scipy.integrate import simpson as simps    # Changed from simps to simpson
-from scipy.integrate import trapezoid as trapz  # Changed from trapz to trapezoid
+try:
+    from scipy.integrate import simpson as simps
+except ImportError:
+    from scipy.integrate import simps
+try:
+    from scipy.integrate import trapezoid as trapz
+except ImportError:
+    from scipy.integrate import trapz
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from cartopy.io import shapereader
@@ -421,26 +427,47 @@ def do_location(config, t_std=0.2, b_std=5, use_p = True, use_s=True, use_b=Fals
     t_end = date2num(UTCDateTime(config['time-grid']['t_end']).datetime)
     t0s = np.linspace(t_start,t_end,config['time-grid']['N_t'])
 
+    # Process P-wave arrival times
     t_a_p = []
-    for t_p_i in config['data']['t_p']:
-        if t_p_i == '':
-            t_a_p.append(None)
-        else:
-            t_a_p.append(date2num(UTCDateTime(t_p_i).datetime))
+    if ('data' in config and 
+        't_p' in config['data'] and 
+        config['data']['t_p'] is not None):
+        for t_p_i in config['data']['t_p']:
+            if t_p_i == '':
+                t_a_p.append(None)
+            else:
+                t_a_p.append(date2num(UTCDateTime(t_p_i).datetime))
+    else:
+        print("No P-wave arrival time data available")
+        t_a_p = [None] * len(config['stations']['stla'])
 
+    # Process S-wave arrival times 
     t_a_s = []
-    for t_s_i in config['data']['t_s']:
-        if t_s_i == '':
-            t_a_s.append(None)
-        else:
-            t_a_s.append(date2num(UTCDateTime(t_s_i).datetime))
+    if ('data' in config and 
+        't_s' in config['data'] and 
+        config['data']['t_s'] is not None):
+        for t_s_i in config['data']['t_s']:
+            if t_s_i == '':
+                t_a_s.append(None)
+            else:
+                t_a_s.append(date2num(UTCDateTime(t_s_i).datetime))
+    else:
+        print("No S-wave arrival time data available")
+        t_a_s = [None] * len(config['stations']['stla'])
 
+    # Process backazimuth data
     b_a = []
-    for b_i in config['data']['b']:
-        if b_i == '':
-            b_a.append(None)
-        else:
-            b_a.append(float(b_i))
+    if ('data' in config and 
+        'b' in config['data'] and 
+        config['data']['b'] is not None):
+        for b_i in config['data']['b']:
+            if b_i == '':
+                b_a.append(None)
+            else:
+                b_a.append(float(b_i))
+    else:
+        print("No backazimuth data available")
+        b_a = [None] * len(config['stations']['stla'])
     
     # Create and manage client with context manager
     with Client(threads_per_worker=threads_per_worker, n_workers=n_workers) as client:
